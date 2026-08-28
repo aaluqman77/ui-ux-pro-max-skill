@@ -1,0 +1,14 @@
+cli/
+docs/
+preview/
+screenshots/
+scripts/
+.git/
+.github/
+.claude/
+.claude-plugin/
+node_modules/
+**/__pycache__/
+**/*.pyc
+*.md
+!mcp_server/README.md

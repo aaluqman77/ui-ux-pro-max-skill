@@ -1,0 +1,5 @@
+# Dependency khusus MCP server (mcp_server/server.py).
+# Mesin cari upstream (src/ui-ux-pro-max/) tetap zero-dependency.
+mcp>=1.10.0
+starlette>=0.37.0
+uvicorn>=0.30.0
