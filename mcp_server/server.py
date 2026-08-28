@@ -3,29 +3,26 @@
 """UI/UX Pro Max - remote MCP server (Streamable HTTP).
 
 Membungkus mesin cari BM25 di ``src/ui-ux-pro-max/scripts/`` jadi tool MCP yang
-bisa dipanggil dari Claude lewat Settings > Connectors. Tidak ada state, tidak
-ada data pengguna, tidak ada tulis-menulis ke disk - murni query masuk, hasil
-ranking keluar.
+bisa dipanggil dari Claude lewat Settings > Connectors. Tanpa state, tanpa data
+pengguna, tanpa tulis ke disk - murni query masuk, hasil ranking keluar.
 
 Env:
   PORT        diisi otomatis oleh Railway (default 8080)
   MCP_SECRET  segmen path rahasia. Endpoint jadi /mcp/<MCP_SECRET>.
               Kalau kosong, endpoint jatuh ke /mcp - JANGAN dipakai di publik.
+  LOG_LEVEL   default "info"
 """
 
 from __future__ import annotations
 
 import os
 import sys
-from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Optional
 
 import uvicorn
-from mcp.server.fastmcp import FastMCP
-from starlette.applications import Starlette
+from mcp.server.mcpserver import MCPServer
 from starlette.responses import JSONResponse
-from starlette.routing import Mount, Route
 
 # --- pasang mesin cari upstream ke sys.path ---------------------------------
 # core.py / design_system.py memang didesain diimpor flat (lihat scripts/search.py)
@@ -33,16 +30,12 @@ ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = ROOT / "src" / "ui-ux-pro-max" / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-from core import (  # noqa: E402
-    AVAILABLE_STACKS,
-    CSV_CONFIG,
-    MAX_RESULTS,
-)
+from core import AVAILABLE_STACKS, CSV_CONFIG, MAX_RESULTS  # noqa: E402
 from core import search as _search  # noqa: E402
 from core import search_stack as _search_stack  # noqa: E402
 
 # design_system.py besar & opsional - kegagalan impor jangan sampai mematikan
-# seluruh server; tool lain tetap harus jalan.
+# seluruh server; tiga tool lainnya harus tetap jalan.
 try:
     from design_system import generate_design_system as _generate_design_system  # noqa: E402
 
@@ -65,12 +58,7 @@ INSTRUCTIONS = (
     "system is needed in one shot."
 )
 
-mcp = FastMCP(
-    "ui-ux-pro-max",
-    instructions=INSTRUCTIONS,
-    stateless_http=True,
-    streamable_http_path=MCP_PATH,
-)
+mcp = MCPServer("ui-ux-pro-max", instructions=INSTRUCTIONS, version="1.0.0")
 
 
 def _clamp(n: Any, lo: int = 1, hi: int = 10) -> int:
@@ -95,19 +83,19 @@ def ui_search(
     Args:
         query: Plain-language description, e.g. "dark fintech dashboard",
             "warm palette for a health app", "font pairing for editorial site".
-        domain: Optional. One of: style (84 UI styles + AI prompt and CSS
-            keywords), color (161 semantic palettes with full token sets),
-            typography (73 font pairings with Google Fonts imports and Tailwind
-            config), google-fonts (searchable font family index), icons, chart
-            (25 chart types with library and a11y guidance), landing (page
+        domain: Optional. One of: style (84 UI styles with AI prompt and CSS
+            keywords), color (semantic palettes with full token sets),
+            typography (font pairings with Google Fonts imports and Tailwind
+            config), google-fonts (font family index), icons, chart (chart
+            types with library and accessibility guidance), landing (page
             structure and CTA strategy), product (per-product-type style
-            recommendations), ux (99 usability and accessibility guidelines
-            with do/don't code), react (React performance rules), web (general
-            web interface rules). Omit to auto-detect from the query.
+            recommendations), ux (usability and accessibility guidelines with
+            do/don't code), react (React performance rules), web (general web
+            interface rules). Omit to auto-detect from the query.
         max_results: 1-10. Default 3.
 
     Returns:
-        dict with domain, query, count and a list of matching rows.
+        Matching rows plus the domain that was searched.
     """
     if domain:
         domain = domain.strip().lower()
@@ -139,7 +127,7 @@ def ui_stack_guidelines(
         max_results: 1-10. Default 3.
 
     Returns:
-        dict with stack, query, count and a list of guideline rows.
+        Matching guideline rows for that stack.
     """
     stack = (stack or "").strip().lower()
     if stack not in AVAILABLE_STACKS:
@@ -199,35 +187,34 @@ def ui_capabilities() -> dict:
     }
 
 
-# --- HTTP app ---------------------------------------------------------------
-async def health(_request):
-    """Cek cepat lewat browser: harus balas ok=true."""
-    return JSONResponse(
-        {
-            "ok": True,
-            "service": "ui-ux-pro-max-mcp",
-            "mcp_path": "/mcp/<secret>" if MCP_SECRET else "/mcp",
-            "secret_configured": bool(MCP_SECRET),
-            "domains": len(AVAILABLE_DOMAINS),
-            "stacks": len(AVAILABLE_STACKS),
-            "design_system_available": _generate_design_system is not None,
-        }
-    )
+# --- health check ------------------------------------------------------------
+def _health_payload() -> dict:
+    return {
+        "ok": True,
+        "service": "ui-ux-pro-max-mcp",
+        "mcp_path": "/mcp/<secret>" if MCP_SECRET else "/mcp",
+        "secret_configured": bool(MCP_SECRET),
+        "domains": len(AVAILABLE_DOMAINS),
+        "stacks": len(AVAILABLE_STACKS),
+        "design_system_available": _generate_design_system is not None,
+    }
 
 
-@asynccontextmanager
-async def lifespan(_app):
-    async with mcp.session_manager.run():
-        yield
+@mcp.custom_route("/", methods=["GET"])
+async def root(_request):
+    return JSONResponse(_health_payload())
 
 
-app = Starlette(
-    routes=[
-        Route("/", health),
-        Route("/healthz", health),
-        Mount("/", app=mcp.streamable_http_app()),
-    ],
-    lifespan=lifespan,
+@mcp.custom_route("/healthz", methods=["GET"])
+async def healthz(_request):
+    return JSONResponse(_health_payload())
+
+
+# stateless_http=True: tiap request berdiri sendiri, aman kalau Railway
+# menjalankan lebih dari satu instance dan tahan terhadap cold start.
+app = mcp.streamable_http_app(
+    streamable_http_path=MCP_PATH,
+    stateless_http=True,
 )
 
 

@@ -1,5 +1,10 @@
 # Dependency khusus MCP server (mcp_server/server.py).
 # Mesin cari upstream (src/ui-ux-pro-max/) tetap zero-dependency.
-mcp>=1.10.0
-starlette>=0.37.0
-uvicorn>=0.30.0
+#
+# PENTING: dipin ke mcp 2.x. Di 1.x kelasnya bernama FastMCP dan diimpor dari
+# mcp.server.fastmcp; di 2.x direname jadi MCPServer di mcp.server.mcpserver.
+# server.py memakai API 2.x, jadi rentang ini tidak boleh dilonggarkan tanpa
+# menyesuaikan importnya.
+mcp>=2.1,<3
+starlette>=0.37
+uvicorn>=0.30
