@@ -11,6 +11,10 @@ Env:
   MCP_SECRET  segmen path rahasia. Endpoint jadi /mcp/<MCP_SECRET>.
               Kalau kosong, endpoint jatuh ke /mcp - JANGAN dipakai di publik.
   LOG_LEVEL   default "info"
+  HOST        alamat bind. Default 0.0.0.0 (wajib di belakang proxy Railway).
+  MCP_ALLOWED_HOSTS
+              opsional, dipisah koma. Kalau diisi, proteksi DNS rebinding
+              dinyalakan dan cuma Host header ini yang diterima.
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ from typing import Any, Optional
 
 import uvicorn
 from mcp.server.mcpserver import MCPServer
+from mcp.server.transport_security import TransportSecuritySettings
 from starlette.responses import JSONResponse
 
 # --- pasang mesin cari upstream ke sys.path ---------------------------------
@@ -187,6 +192,27 @@ def ui_capabilities() -> dict:
     }
 
 
+# --- konfigurasi transport ---------------------------------------------------
+# Proteksi DNS rebinding milik SDK memvalidasi Host header terhadap daftar
+# putih. SDK menyalakannya OTOMATIS kalau host = 127.0.0.1/localhost/::1, dan
+# daftar putihnya localhost saja -> di belakang proxy Railway setiap request
+# balas 421 "Invalid Host header". Karena itu host diambil dari env (0.0.0.0)
+# dan settings-nya diisi eksplisit, bukan dibiarkan None.
+#
+# Default: proteksi MATI. Alasannya proteksi ini dirancang buat server yang
+# nempel di localhost dan bisa dijebak lewat browser; server ini publik, di
+# balik HTTPS, dan sudah dijaga segmen path rahasia 48 hex. Isi
+# MCP_ALLOWED_HOSTS kalau mau menyalakannya lagi.
+_allowed = [h.strip() for h in os.environ.get("MCP_ALLOWED_HOSTS", "").split(",") if h.strip()]
+TRANSPORT_SECURITY = TransportSecuritySettings(
+    enable_dns_rebinding_protection=bool(_allowed),
+    allowed_hosts=_allowed,
+    allowed_origins=[f"https://{h}" for h in _allowed],
+)
+
+BIND_HOST = os.environ.get("HOST", "0.0.0.0")
+
+
 # --- health check ------------------------------------------------------------
 def _health_payload() -> dict:
     return {
@@ -194,6 +220,7 @@ def _health_payload() -> dict:
         "service": "ui-ux-pro-max-mcp",
         "mcp_path": "/mcp/<secret>" if MCP_SECRET else "/mcp",
         "secret_configured": bool(MCP_SECRET),
+        "host_check": bool(_allowed),
         "domains": len(AVAILABLE_DOMAINS),
         "stacks": len(AVAILABLE_STACKS),
         "design_system_available": _generate_design_system is not None,
@@ -215,13 +242,15 @@ async def healthz(_request):
 app = mcp.streamable_http_app(
     streamable_http_path=MCP_PATH,
     stateless_http=True,
+    transport_security=TRANSPORT_SECURITY,
+    host=BIND_HOST,
 )
 
 
 if __name__ == "__main__":
     uvicorn.run(
         app,
-        host="0.0.0.0",
+        host=BIND_HOST,
         port=int(os.environ.get("PORT", "8080")),
         log_level=os.environ.get("LOG_LEVEL", "info"),
     )
